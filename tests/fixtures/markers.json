@@ -1,0 +1,4 @@
+[
+  {"name":"TODO","regex":"\\bTODO\\b","fg":"white","bg":"red"},
+  {"name":"BEAD","regex":"\\bBEAD\\b","fg":"white","bg":"red"}
+]

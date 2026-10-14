@@ -1,0 +1,4 @@
+* TODO write the release notes
+* NOTE the changelog lives in docs
+* BEAD follow-up: package for nix
+* DONE tag the first version
