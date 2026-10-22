@@ -3,3 +3,7 @@
   (#match? @hx_marker_todo "\\bTODO\\b"))
 ((_) @hx_marker_bead
   (#match? @hx_marker_bead "\\bBEAD\\b"))
+((_) @hx_marker_note
+  (#match? @hx_marker_note "\\bNOTE\\b"))
+((_) @hx_marker_done
+  (#match? @hx_marker_done "\\bDONE\\b"))

@@ -8,3 +8,11 @@ bg = "red"
 [hx_marker_bead]
 fg = "white"
 bg = "red"
+
+[hx_marker_note]
+fg = "white"
+bg = "red"
+
+[hx_marker_done]
+fg = "white"
+bg = "green"

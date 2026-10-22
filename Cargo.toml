@@ -1,6 +1,6 @@
 [package]
 name = "hx-highlight"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Make TODO, NOTE, BEAD and DONE markers impossible to miss in Helix and Vim, from one JSON file"
 license = "MIT"

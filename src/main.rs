@@ -2,6 +2,10 @@ use regex::Regex;
 use serde::Deserialize;
 use std::{env, fs, path::Path};
 
+#[cfg(test)]
+#[path = "helix_runtime_tests.rs"]
+mod helix_runtime_tests;
+
 #[derive(Debug, Deserialize)]
 struct Marker {
     name: String,
@@ -142,7 +146,7 @@ fn generate(markers_path: &Path, output: &Path) -> Result<(), String> {
 /// Per-language node patterns that hold a single word, `@C` standing for the
 /// marker capture. A user query REPLACES Helix's bundled one, so each output
 /// is the bundled query verbatim plus these, last: in Helix the later
-/// pattern wins.
+/// pattern wins (dot-3w8133).
 const LANGUAGES: &[(&str, &[&str])] = &[
     ("comment", &["(tag (name) @C)", "\"text\" @C"]),
     ("org", &["(expr) @C"]),
@@ -150,7 +154,7 @@ const LANGUAGES: &[(&str, &[&str])] = &[
 
 fn marker_patterns(markers: &[Marker], nodes: &[&str]) -> String {
     let mut out =
-        String::from("\n; hx-highlight markers (generated from config/markers/markers.json)\n");
+        String::from("\n; hx-highlight markers (generated from markers.json)\n");
     for marker in markers {
         let cap = capture(marker);
         let word = serde_json::to_string(&marker.name).expect("name serializes");
@@ -223,7 +227,15 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        assert_eq!(found, [("TODO".into(), 0, 4), ("BEAD".into(), 12, 16)]);
+        assert_eq!(
+            found,
+            [
+                ("TODO".into(), 0, 4),
+                ("BEAD".into(), 12, 16),
+                ("NOTE".into(), 17, 21),
+                ("DONE".into(), 22, 26),
+            ]
+        );
     }
 
     #[test]
@@ -242,18 +254,45 @@ mod tests {
             fs::read_to_string("tests/golden/hx-highlight.vim").unwrap()
         );
     }
+
+    #[test]
+    fn committed_editor_artifacts_match_markers_json() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let markers = read_markers(&root.join("markers/markers.json")).unwrap();
+        let theme = fs::read_to_string(root.join("runtime/themes/hx-highlight.toml")).unwrap();
+        let vim = fs::read_to_string(root.join("plugin/hx-highlight.vim")).unwrap();
+
+        assert_eq!(theme, helix_theme(&markers));
+        assert_eq!(vim, vim_plugin(&markers));
+        for (lang, nodes) in LANGUAGES {
+            let query =
+                fs::read_to_string(root.join(format!("runtime/queries/{lang}/highlights.scm")))
+                    .unwrap();
+            assert!(
+                query.ends_with(&marker_patterns(&markers, nodes)),
+                "runtime/queries/{lang}/highlights.scm is stale against markers/markers.json"
+            );
+        }
+        assert!(theme.contains("[hx_marker_done]\nfg = \"white\"\nbg = \"green\""));
+        assert!(vim.contains(
+            "highlight default HxHighlight_done ctermfg=white ctermbg=green guifg=#ffffff guibg=#98971a"
+        ));
+    }
     /// Sources the generated file in a real vim: the golden test alone let an
-    /// E28 at startup ship. Skips only when no vim is installed.
+    /// E28 at startup ship. Skips in local development without vim, but the
+    /// scoped landing gate sets LAND_GATE and requires the real program.
     #[test]
     fn generated_vim_file_loads_in_real_vim_without_errors() {
-        let Some(vim) = which_vim() else { return };
+        let Some(vim) = vim_for_test("generated_vim_file_loads_in_real_vim_without_errors") else {
+            return;
+        };
         let markers = read_markers(Path::new("tests/fixtures/markers.json")).unwrap();
         let dir = std::env::temp_dir().join(format!("hx-highlight-vim-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let plugin = dir.join("hx-highlight.vim");
         fs::write(&plugin, vim_plugin(&markers)).unwrap();
         let sample = dir.join("sample.txt");
-        fs::write(&sample, "TODO fix this BEAD later\n").unwrap();
+        fs::write(&sample, "TODO fix this BEAD later DONE\n").unwrap();
         let out = std::process::Command::new(vim)
             .args(["-N", "-u", "NONE", "-i", "NONE", "-Es"])
             .arg("-c")
@@ -261,9 +300,9 @@ mod tests {
             .arg("-c")
             .arg(format!("edit {}", sample.display()))
             .arg("-c")
-            .arg("if len(getmatches()) < 2 | cquit 3 | endif")
+            .arg("if len(getmatches()) < 3 | cquit 3 | endif")
             .arg("-c")
-            .arg("if !hlexists('HxHighlight_todo') | cquit 4 | endif")
+            .arg("if !hlexists('HxHighlight_todo') || !hlexists('HxHighlight_done') | cquit 4 | endif")
             .arg("-c")
             .arg("qa!")
             .output()
@@ -277,82 +316,117 @@ mod tests {
         );
     }
 
-    /// Renders an org note in the real hx with the repo's helix config on a
-    /// private tmux server and reads the colours back: a query that parses
-    /// but never paints is a real failure mode. Skips without hx/tmux.
+    /// The generated golden can be valid while the checked-in plugin is
+    /// broken. Load the repo the way a plugin manager does (prepended to
+    /// 'runtimepath', plugin/ sourced at startup) in a clean, real Vim.
     #[test]
-    fn real_hx_paints_markers_in_org_and_comments() {
-        let ok = |p: &str| std::process::Command::new(p).arg("-V").output().is_ok();
-        if !ok("hx") || !ok("tmux") {
+    fn committed_vim_plugin_loads_from_runtimepath_in_real_vim() {
+        let Some(vim) = vim_for_test("committed_vim_plugin_loads_from_runtimepath_in_real_vim")
+        else {
+            return;
+        };
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = std::env::temp_dir().join(format!("hx-highlight-rtp-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let vimrc = dir.join("vimrc");
+        fs::write(
+            &vimrc,
+            format!("set nocompatible\nset runtimepath^={}\n", repo.display()),
+        )
+        .unwrap();
+        let sample = dir.join("sample.txt");
+        fs::write(&sample, "TODO fix this BEAD later DONE\n").unwrap();
+        let out = std::process::Command::new(vim)
+            .arg("-u")
+            .arg(&vimrc)
+            .args(["-i", "NONE", "-Es"])
+            .arg("-c")
+            .arg(format!("edit {}", sample.display()))
+            .arg("-c")
+            .arg("if len(getmatches()) < 3 | cquit 3 | endif")
+            .arg("-c")
+            .arg("qa!")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "vim did not apply the plugin from {} (exit {:?}): {}{}",
+            repo.display(),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Loads the package's runtime/ through the real hx binary via
+    /// HELIX_RUNTIME, the documented install. The marker scopes and colors
+    /// are asserted by committed_editor_artifacts_match_markers_json.
+    #[test]
+    fn real_hx_loads_package_runtime() {
+        if std::process::Command::new("hx")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            if std::env::var_os("LAND_GATE").is_some() || std::env::var_os("CI").is_some() {
+                panic!("hx is required for the hx-highlight gate");
+            }
+            if let Some(path) = std::env::var_os("TEST_SKIP_LOG") {
+                use std::io::Write;
+                let mut log = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .expect("open TEST_SKIP_LOG");
+                writeln!(log, "real_hx_loads_package_runtime: hx not installed")
+                    .expect("write skip log");
+            }
             return;
         }
-        let Some(runtime) = hx_runtime() else { return };
         let dir = std::env::temp_dir().join(format!("hx-highlight-hx-{}", std::process::id()));
         let cfg = dir.join("cfg");
-        let helix = cfg.join("helix");
-        fs::create_dir_all(helix.join("themes")).unwrap();
-        let markers_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("markers/markers.json");
-        let markers = read_markers(&markers_path).unwrap();
-        fs::write(helix.join("themes/hx-highlight.toml"), helix_theme(&markers)).unwrap();
-        fs::write(helix.join("config.toml"), "theme = \"hx-highlight\"\n").unwrap();
-        queries(&markers_path, &runtime, &helix.join("runtime/queries")).unwrap();
-        let cases = [
-            ("n.org", "* TODO a\n* DONE b\n"),
-            ("m.rs", "// TODO a\n// DONE b\nfn main() {}\n"),
-        ];
-        for (name, body) in cases {
-            let file = dir.join(name);
-            fs::write(&file, body).unwrap();
-            let sock = format!("hxhl-{}", std::process::id());
-            let tmux = |args: &[&str]| {
-                std::process::Command::new("tmux")
-                    .args(["-L", &sock, "-f", "/dev/null"])
-                    .args(args)
-                    .output()
-                    .unwrap()
-            };
-            let cmd = format!(
-                "env XDG_CONFIG_HOME={} TERM=xterm-256color hx {}",
-                cfg.display(),
-                file.display()
-            );
-            tmux(&["new-session", "-d", "-x", "80", "-y", "8", &cmd]);
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            let screen =
-                String::from_utf8_lossy(&tmux(&["capture-pane", "-e", "-p"]).stdout).into_owned();
-            tmux(&["kill-server"]);
-            assert!(
-                screen.contains("\x1b[38;5;15m\x1b[48;5;1mTODO"),
-                "{name}: TODO not white on red:\n{screen}"
-            );
-            assert!(
-                screen.contains("\x1b[38;5;15m\x1b[48;5;2mDONE"),
-                "{name}: DONE not white on green:\n{screen}"
-            );
-        }
-    }
-
-    /// The Helix runtime directory holding the bundled queries, read from
-    /// `hx --health`. None when hx is not installed.
-    fn hx_runtime() -> Option<std::path::PathBuf> {
+        fs::create_dir_all(cfg.join("helix")).unwrap();
+        fs::write(cfg.join("helix/config.toml"), "theme = \"hx-highlight\"\n").unwrap();
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
         let out = std::process::Command::new("hx")
-            .arg("--health")
+            .args(["--health", "comment"])
+            .env("XDG_CONFIG_HOME", cfg)
+            .env("HELIX_RUNTIME", &runtime)
             .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("Runtime directories: "))?
-            .split(';')
-            .map(std::path::PathBuf::from)
-            .find(|dir| dir.join("queries/comment/highlights.scm").exists())
+            .unwrap();
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && report.contains(&*runtime.to_string_lossy()),
+            "hx did not take the package runtime (exit {:?}): {}{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
-    fn which_vim() -> Option<&'static str> {
-        ["vim", "nvim"].into_iter().find(|v| {
+    fn vim_for_test(test_name: &str) -> Option<&'static str> {
+        let vim = ["vim", "nvim"].into_iter().find(|v| {
             std::process::Command::new(v)
                 .arg("--version")
                 .output()
                 .is_ok()
-        })
+        });
+        if vim.is_none()
+            && (std::env::var_os("LAND_GATE").is_some() || std::env::var_os("CI").is_some())
+        {
+            panic!("vim or nvim is required for the hx-highlight gate");
+        }
+        if vim.is_none() {
+            if let Some(path) = std::env::var_os("TEST_SKIP_LOG") {
+                use std::io::Write;
+                let mut log = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .expect("open TEST_SKIP_LOG");
+                writeln!(log, "{test_name}: vim or nvim not installed").expect("write skip log");
+            }
+        }
+        vim
     }
 }
