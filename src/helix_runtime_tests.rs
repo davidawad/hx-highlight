@@ -74,6 +74,8 @@ fn helix_runtime() -> PathBuf {
         .expect("resolve hx executable");
     let prefix = executable.parent().unwrap().parent().unwrap();
     [
+        executable.parent().unwrap().join("runtime"),
+        prefix.join("lib/runtime"),
         prefix.join("lib/helix/runtime"),
         prefix.join("share/helix/runtime"),
         PathBuf::from("/usr/share/helix/runtime"),

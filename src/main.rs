@@ -389,7 +389,7 @@ mod tests {
         fs::write(cfg.join("helix/config.toml"), "theme = \"hx-highlight\"\n").unwrap();
         let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
         let out = std::process::Command::new("hx")
-            .args(["--health", "comment"])
+            .arg("--health")
             .env("XDG_CONFIG_HOME", cfg)
             .env("HELIX_RUNTIME", &runtime)
             .output()
